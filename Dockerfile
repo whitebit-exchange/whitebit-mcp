@@ -1,10 +1,21 @@
-FROM python:3.12-slim
+FROM python:3.13-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml .
+RUN uv sync --no-install-project --no-dev
 
-COPY . .
+FROM python:3.13-slim
 
-CMD ["python", "server.py"]
+COPY --from=builder /app/.venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+COPY server.py .
+
+EXPOSE 8000
+
+ENTRYPOINT ["python", "server.py"]

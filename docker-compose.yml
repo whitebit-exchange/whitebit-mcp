@@ -1,9 +1,9 @@
 services:
-  mcp:
+  whitebit-mcp:
     build: .
-    image: newmcp-mcp
+    image: whitebit-mcp
     ports:
-      - "8000:8000"
+      - "8080:8000"
     environment:
-      - PYTHONUNBUFFERED=1
-      - WHITEBIT_BASE_URL=${WHITEBIT_BASE_URL:-https://whitebit.com}
+      WHITEBIT_BASE_URL: ${WHITEBIT_BASE_URL:-https://whitebit.com}
+    restart: unless-stopped
