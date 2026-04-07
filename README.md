@@ -1,196 +1,301 @@
-# whitebit-mcp
+<h1 align="center">WhiteBit MCP Server</h1>
 
-A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that exposes the [WhiteBIT](https://whitebit.com) exchange API as AI tools. Connect it to Cursor, Claude Code, or Claude Desktop and interact with markets, order books, trading, balances, and more in plain language.
+<p align="center">
+  <strong>Connect AI assistants to WhiteBit — trade, query, and manage your crypto portfolio through natural language.</strong>
+</p>
 
-## Features
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python" alt="Python 3.11+" />
+  <img src="https://img.shields.io/badge/MCP-compatible-8A2BE2?style=flat-square" alt="MCP compatible" />
+  <img src="https://img.shields.io/badge/transport-HTTP-0070f3?style=flat-square" alt="HTTP transport" />
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT license" />
+</p>
 
-- **115 tools** across market data, spot trading, collateral trading, wallet, lending, sub-accounts, mining pool, and currency conversion
-- Credentials are passed per tool call — the server never stores API keys
-- Runs as a single Docker container; no external infrastructure needed
-- Full tool reference: [`llms.txt`](llms.txt)
+---
 
-## Quick Start (Docker)
+**WhiteBit MCP Server** is a [Model Context Protocol](https://modelcontextprotocol.io) server for the [WhiteBit](https://whitebit.com) cryptocurrency exchange. It exposes 100+ trading and account tools — auto-generated from the official WhiteBit Python SDK — that any MCP-compatible AI assistant can call through natural language. Check prices, manage orders, query balances, handle withdrawals, and more.
+
+Works with **Claude Code**, **Claude Desktop**, **Cursor**, and any other MCP-compatible client.
+
+> **Credentials are passed as tool parameters** (`api_key`, `secret_key`), not as server-level configuration. This means you can use different WhiteBit accounts within the same session without restarting the server.
+
+---
+
+## Prerequisites
+
+Before you start, make sure you have the following:
+
+| Requirement | Details |
+|-------------|---------|
+| **Docker & Docker Compose** | To run the server — [install Docker](https://docs.docker.com/get-docker/) |
+| **WhiteBit account** | Sign up at [whitebit.com](https://whitebit.com) |
+| **WhiteBit API key** | Profile → API keys → Create key (Read and/or Trade permissions) |
+| **MCP-compatible AI client** | Claude Code, Claude Desktop, Cursor, or any other MCP client |
+| **Python 3.11+** | Only if running without Docker |
+
+---
+
+## Quick Start
+
+### 1. Get your WhiteBit API credentials
+
+1. Log in to [whitebit.com](https://whitebit.com) → **Profile → API keys**
+2. Create a new key — choose **Read** and/or **Trade** permissions as needed
+3. Copy your **API Key** and **Secret Key**
+
+> Public endpoints (market data, tickers, order book) work without credentials. Private endpoints (account, trading) require both.
+
+### 2. Start the server
 
 ```bash
-git clone https://github.com/whitebit-exchange/whitebit-mcp
+git clone https://github.com/your-org/whitebit-mcp.git
 cd whitebit-mcp
-
 docker compose up -d
 ```
 
-The MCP endpoint is at `http://localhost:8080/mcp`.
+The server starts at `http://localhost:8000`.
 
-To stop:
+### 3. Add to your AI client
 
-```bash
-docker compose down
-```
+#### Claude Code (project-level)
 
-## Connecting Your AI Client
-
-### Cursor
-
-Create or edit `~/.cursor/mcp.json`:
+Create or update `.mcp.json` in your project root:
 
 ```json
 {
   "mcpServers": {
-    "whitebit": {
-      "url": "http://localhost:8080/mcp"
+    "whitebit-mcp": {
+      "type": "http",
+      "url": "http://localhost:8000/mcp"
     }
   }
 }
 ```
 
-Then open the Command Palette (`Cmd+Shift+P`) → **MCP: Reload Servers**.
-
-### Claude Code (CLI)
-
-The repo ships with a `.mcp.json` at the project root. Running `claude` from inside this directory registers the server automatically (project scope).
-
-To register it globally for all projects:
+Or via CLI:
 
 ```bash
-claude mcp add --transport http --scope user whitebit http://localhost:8080/mcp
+claude mcp add whitebit-mcp "http://localhost:8000/mcp" -t http -s user
 ```
 
-Verify:
+> Credentials (`api_key`, `secret_key`) are passed directly to each tool call — the server does not store them.
+
+That's it. Your AI can now trade on WhiteBit.
+
+---
+
+## Integrations
+
+### VS Code (Claude Extension)
+
+Install the [Claude extension for VS Code](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-code), then add the server via CLI:
 
 ```bash
-claude mcp list
-# whitebit: http://localhost:8080/mcp (http)
+claude mcp add whitebit-mcp "http://localhost:8000/mcp" -t http -s user
 ```
 
-Use `/mcp` inside a Claude Code session to see live server status and available tools.
+Or create `.mcp.json` in your project root to share the config with your team:
+
+```json
+{
+  "mcpServers": {
+    "whitebit-mcp": {
+      "type": "http",
+      "url": "http://localhost:8000/mcp"
+    }
+  }
+}
+```
+
+Once added, use `/mcp` in the Claude chat panel to enable, disable, or reconnect the server.
+
+> `.mcp.json` is in `.gitignore` by default — if you want to share it with your team, remove it from `.gitignore` first.
 
 ### Claude Desktop
 
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 ```json
 {
   "mcpServers": {
-    "whitebit": {
+    "whitebit-mcp": {
       "type": "http",
-      "url": "http://localhost:8080/mcp"
+      "url": "http://localhost:8000/mcp"
     }
   }
 }
 ```
 
-Restart Claude Desktop.
+### Cursor
 
-### Codex
-
-Add to `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.whitebit]
-url = "http://localhost:8080/mcp"
-```
-
-Then start a Codex session — it will connect to the server automatically.
-
-### OpenClaw
-
-Add to your OpenClaw agent config:
+Add to your Cursor MCP settings (`~/.cursor/mcp.json`):
 
 ```json
 {
-  "mcp_servers": {
-    "whitebit": {
-      "url": "http://localhost:8080/mcp"
+  "mcpServers": {
+    "whitebit-mcp": {
+      "type": "http",
+      "url": "http://localhost:8000/mcp"
     }
   }
 }
 ```
 
-## API Keys
+### Codex
 
-Most tools require WhiteBIT API keys. Generate them at [whitebit.com](https://whitebit.com) → Profile → API Keys. Use the minimum permissions your use case requires — read-only keys are sufficient for balance and order queries.
+Add to your Codex MCP settings (`~/.codex/config.toml`):
 
-**How credentials work:** API keys are passed as parameters in each tool call. Your AI client sends them on your behalf when you provide them in conversation. The server uses them only to sign the outgoing WhiteBIT API request and does not store, log, or cache them.
-
-**Public market data tools** (market info, tickers, order book, etc.) query WhiteBIT's public endpoints. The server still requires both `api_key` and `secret_key` to be non-empty strings — pass `"public"` for both if you only need public data.
-
-### Example: telling the AI your keys
-
-At the start of a session with authenticated tools, tell the AI:
-
-```
-My WhiteBIT API key is <your-public-key> and secret is <your-secret-key>.
-Show my spot balance.
+```toml
+[[mcp_servers]]
+name = "whitebit-mcp"
+type = "http"
+url  = "http://localhost:8000/mcp"
 ```
 
-The AI will pass your credentials as tool parameters for the duration of the conversation.
+Or using the JSON format (`~/.codex/mcp.json`):
 
-## Example Prompts
+```json
+{
+  "mcpServers": {
+    "whitebit-mcp": {
+      "type": "http",
+      "url": "http://localhost:8000/mcp"
+    }
+  }
+}
+```
 
-**Market data (any string for api_key/secret_key)**
+### OpenClaw
 
-- "What is the current BTC_USDT price?"
-- "Show me the order book for ETH_USDT"
-- "What are the deposit fees for USDT?"
-- "List all available markets"
-- "What's the funding rate history for BTC_USDT?"
-- "Is WhiteBIT in maintenance mode?"
+Add via CLI:
 
-**Spot trading (API keys required)**
+```bash
+openclaw mcp set whitebit-mcp '{"url":"http://localhost:8000/mcp"}'
+```
 
-- "What is my spot balance?"
-- "Show my open orders on BTC_USDT"
-- "Place a limit buy order for 0.001 BTC at $90,000 on BTC_USDT"
-- "Cancel all my open orders on ETH_USDT"
-- "Show my order history for the last 30 days"
+Or add to your OpenClaw config under `mcp.servers`:
 
-**Wallet (API keys required)**
+```json
+{
+  "mcp": {
+    "servers": {
+      "whitebit-mcp": {
+        "url": "http://localhost:8000/mcp"
+      }
+    }
+  }
+}
+```
 
-- "What is my deposit address for USDT on TRC20?"
-- "Show my recent deposits and withdrawals"
-- "Transfer 100 USDT from my main account to spot trading"
-- "Create a WhiteBIT code for 50 USDT"
+### Any MCP-compatible client
 
-**Collateral trading (API keys required)**
+The server uses standard **Streamable HTTP transport** on `http://localhost:8000/mcp`. No server-level authentication is required — credentials are supplied per tool call.
 
-- "What are my open collateral positions?"
-- "Place a collateral limit buy for 0.01 BTC on BTC_USDT"
-- "What is my current leverage?"
-- "Close my BTC_USDT position"
+---
 
-**Sub-accounts (API keys required)**
+## Usage Examples
 
-- "List all my sub-accounts"
-- "Show the balance of sub-account ID 123"
-- "Transfer 200 USDT to sub-account ID 456"
+Once connected, talk to your AI naturally. It will prompt you for credentials when needed:
+
+```
+"What's the current BTC/USDT price?"
+"Show me my spot account balance"
+"Place a limit buy order for 0.01 BTC at $95,000"
+"Cancel all my open orders on ETH/USDT"
+"What are the trading fees for BTC/USDT?"
+"Transfer 100 USDT from my main account to my trade account"
+"Show my open collateral positions"
+"Withdraw 500 USDT to address 0x..."
+```
+
+---
+
+## How Credentials Work
+
+Unlike header-based servers, this server receives `api_key` and `secret_key` as explicit parameters on every tool call. The AI assistant supplies them from the conversation context.
+
+| Endpoint type | Required parameters |
+|---------------|---------------------|
+| Public (market data) | `api_key`, `secret_key` |
+| Private (trading, account) | `api_key`, `secret_key` |
+| Account endpoints (OAuth2) | `api_key`, `bearer_token` |
+
+To obtain a `bearer_token` for account endpoints, use the `authentication__get_access_token` tool first.
+
+Use `get_credentials_status` to verify that credentials are being passed correctly.
+
+---
 
 ## Configuration
 
-| Variable | Default | Description |
-|---|---|---|
-| `WHITEBIT_BASE_URL` | `https://whitebit.com` | API base URL — override for custom deployments |
+Copy `.env.example` to `.env` and adjust as needed:
 
-Set it in `docker-compose.yml` or as a shell variable:
+```env
+# WhiteBit API base URL
+WHITEBIT_BASE_URL=https://whitebit.com
 
-```bash
-WHITEBIT_BASE_URL=https://whitebit.com docker compose up
+# Server port (default: 8000)
+PORT=8000
+
+# Log level: debug | info | warn | error
+LOG_LEVEL=info
 ```
 
-## Running Without Docker
+
+## Available Tools
+
+100+ tools auto-generated from the official WhiteBit Python SDK across 19 categories:
+
+| Category | Tool prefix |
+|----------|-------------|
+| **Authentication** | `authentication__` |
+| **Account endpoints** | `account_endpoints__` |
+| **Public API v4** | `public_api_v4__` |
+| **Main account** | `main_account__` |
+| **Deposit** | `deposit__` |
+| **Withdraw** | `withdraw__` |
+| **Transfer** | `transfer__` |
+| **Codes** | `codes__` |
+| **Spot trading** | `spot_trading__` |
+| **Collateral trading** | `collateral_trading__` |
+| **Market fee** | `market_fee__` |
+| **Fees** | `fees__` |
+| **Convert** | `convert_estimate`, `convert_confirm`, `convert_history` |
+| **Crypto lending (flex)** | `crypto_lending_flex__` |
+| **Crypto lending (fixed)** | `crypto_lending_fixed__` |
+| **Sub-account** | `sub_account__` |
+| **Sub-account API keys** | `sub_account_api_keys__` |
+| **Mining pool** | `mining_pool__` |
+| **Credit line** | `credit_line__` |
+| **Credentials** | `get_credentials_status` |
+
+Tools are named `{category}__{method}` (e.g. `spot_trading__create_limit_order`). All tool names and parameters are derived directly from the SDK — no manual mapping.
+
+---
+
+## Security
+
+- Credentials are passed per tool call — **never stored** in server memory or logs
+- Use **read-only API keys** if you only need market data or account queries
+- For trading, create a dedicated API key with only the permissions you need
+- Consider IP whitelisting on your WhiteBit API key for additional protection
+
+---
+
+## Running without Docker
+
+Requirements: **Python 3.11+**
 
 ```bash
 pip install -r requirements.txt
+
+# Run
 python server.py
 ```
 
-The server listens on `http://0.0.0.0:8000`. When running without Docker, update your MCP client config to use port 8000 instead of 8080.
+The server listens on `PORT` (default `8000`).
 
-## Development
-
-```bash
-pip install -e ".[dev]"
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+---
 
 ## License
 
