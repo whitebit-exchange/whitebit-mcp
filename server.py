@@ -122,6 +122,11 @@ class WhitebitHmacTransport(httpx.AsyncBaseTransport):
         self._secret_key = secret_key
         self._inner = httpx.AsyncHTTPTransport()
 
+    @staticmethod
+    def _ua_for(request: httpx.Request) -> bytes:
+        existing = request.headers.get("user-agent", "")
+        return (f"{existing} mcp/python" if existing else "mcp/python").encode()
+
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             try:
@@ -155,6 +160,7 @@ class WhitebitHmacTransport(httpx.AsyncBaseTransport):
                 if k.lower() not in (
                     b"authorization", b"content-type", b"content-length",
                     b"x-txc-apikey", b"x-txc-payload", b"x-txc-signature",
+                    b"user-agent",
                 )
             ]
             new_headers += [
@@ -163,12 +169,28 @@ class WhitebitHmacTransport(httpx.AsyncBaseTransport):
                 (b"x-txc-signature", signature.encode()),
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(new_body)).encode()),
+                (b"user-agent", self._ua_for(request)),
             ]
             request = httpx.Request(
                 method=request.method,
                 url=request.url,
                 headers=new_headers,
                 content=new_body,
+                extensions=request.extensions,
+            )
+
+        else:
+            new_headers = [(k, v) for k, v in request.headers.raw if k.lower() != b"user-agent"]
+            new_headers.append((b"user-agent", self._ua_for(request)))
+            try:
+                body = request.content
+            except httpx.RequestNotRead:
+                body = b""
+            request = httpx.Request(
+                method=request.method,
+                url=request.url,
+                headers=new_headers,
+                content=body,
                 extensions=request.extensions,
             )
 
