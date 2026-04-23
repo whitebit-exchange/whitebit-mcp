@@ -348,5 +348,10 @@ async def get_credentials_status(api_key: str, secret_key: str) -> str:
     return "❌ api_key and/or secret_key not provided."
 
 
+def main() -> None:
+    """Entry point for `uvx whitebit-mcp` / `whitebit-mcp` console script (stdio transport)."""
+    mcp.run()
+
+
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")

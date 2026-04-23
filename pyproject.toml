@@ -19,10 +19,12 @@ dev = [
     "mypy>=1.0.0",
 ]
 
+[project.scripts]
+whitebit-mcp       = "server:main"
+whitebit-mcp-setup = "setup_mcp:main"
+
 [tool.hatch.build.targets.wheel]
-# server.py is a standalone script, not a library package.
-# This entry enables `pip install -e ".[dev]"` for local dev tooling only.
-include = ["server.py"]
+include = ["server.py", "setup_mcp.py"]
 
 [tool.ruff]
 line-length = 100
