@@ -118,7 +118,8 @@ def _merge_openclaw_json(path: Path, entries: dict[str, dict]) -> None:
     """Read existing OpenClaw config, upsert mcp.servers entries, write back.
 
     OpenClaw uses {"mcp": {"servers": {...}}} — NOT the "mcpServers" top-level
-    key used by Claude Desktop/Code.  Writing "mcpServers" breaks OpenClaw.
+    key used by Claude Desktop/Code.  Writing "mcpServers" breaks OpenClaw,
+    so any stale "mcpServers" key is removed on every run.
     """
     config: dict = {}
     if path.exists():
@@ -126,6 +127,7 @@ def _merge_openclaw_json(path: Path, entries: dict[str, dict]) -> None:
             config = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
+    config.pop("mcpServers", None)  # remove stale key that breaks OpenClaw
     config.setdefault("mcp", {}).setdefault("servers", {}).update(entries)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
