@@ -5,9 +5,12 @@ import inspect
 import json
 import os
 import time
+from contextvars import ContextVar
 
 import httpx
+import uvicorn
 from mcp.server.fastmcp import FastMCP
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from whitebit.core.client_wrapper import AsyncClientWrapper
 from whitebit.environment import WhitebitApiEnvironment
@@ -33,10 +36,12 @@ from whitebit.spot_trading.client import AsyncSpotTradingClient
 from whitebit.client import AsyncWhitebitApi, OMIT
 
 # ---------------------------------------------------------------------------
-# Credentials are passed as tool parameters (api_key, secret_key) so that
-# the LLM can supply them from conversation context.
-# WHITEBIT_BASE_URL remains an env-var-only config (useful for tests).
-# account_endpoints use OAuth2 Bearer auth; supply bearer_token to use them.
+# Credentials are read from:
+#   HTTP transport  — request headers X-WB-Api-Key / X-WB-Secret-Key
+#   stdio transport — env vars WHITEBIT_API_KEY / WHITEBIT_SECRET_KEY
+#
+# WHITEBIT_BASE_URL is an env-var-only setting (useful for testnet).
+# account_endpoints use OAuth2 Bearer auth; supply bearer_token per tool call.
 # ---------------------------------------------------------------------------
 
 SUBCLIENT_CLASSES: dict[str, type] = {
@@ -63,21 +68,11 @@ SUBCLIENT_CLASSES: dict[str, type] = {
 
 _TOP_LEVEL_METHODS = ("convert_estimate", "convert_confirm", "convert_history")
 
-# Credential parameters injected into every tool signature.
-_CRED_PARAMS = [
-    inspect.Parameter("api_key", kind=inspect.Parameter.KEYWORD_ONLY, annotation=str),
-    inspect.Parameter("secret_key", kind=inspect.Parameter.KEYWORD_ONLY, annotation=str),
-]
+# Per-request credential storage (set by CredentialsMiddleware for HTTP transport).
+_api_key_var: ContextVar[str] = ContextVar("wb_api_key", default="")
+_secret_key_var: ContextVar[str] = ContextVar("wb_secret_key", default="")
 
-# secret_key as optional — for endpoints that don't use HMAC signing.
-_SECRET_KEY_OPTIONAL = inspect.Parameter(
-    "secret_key",
-    kind=inspect.Parameter.KEYWORD_ONLY,
-    annotation=str,
-    default="",
-)
-
-# Extra bearer_token parameter injected into account_endpoints tools.
+# bearer_token is still a per-call parameter for account_endpoints (OAuth2).
 _BEARER_PARAM = inspect.Parameter(
     "bearer_token",
     kind=inspect.Parameter.KEYWORD_ONLY,
@@ -97,6 +92,13 @@ _SNAKE_TO_CAMEL = {
 _ENV = None
 
 
+def _get_credentials() -> tuple[str, str]:
+    """Return (api_key, secret_key) from request context or env vars."""
+    api_key = _api_key_var.get() or os.environ.get("WHITEBIT_API_KEY", "")
+    secret_key = _secret_key_var.get() or os.environ.get("WHITEBIT_SECRET_KEY", "")
+    return api_key, secret_key
+
+
 def _get_environment() -> WhitebitApiEnvironment:
     global _ENV
     if _ENV is None:
@@ -112,6 +114,20 @@ def _get_environment() -> WhitebitApiEnvironment:
 def _is_credentials_error(exc: Exception) -> bool:
     msg = str(exc).lower()
     return "invalid payload" in msg or "code: 9" in msg
+
+
+class CredentialsMiddleware:
+    """ASGI middleware: extracts X-WB-Api-Key / X-WB-Secret-Key headers into ContextVars."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] in ("http", "websocket"):
+            headers: dict[bytes, bytes] = dict(scope.get("headers", []))
+            _api_key_var.set(headers.get(b"x-wb-api-key", b"").decode())
+            _secret_key_var.set(headers.get(b"x-wb-secret-key", b"").decode())
+        await self.app(scope, receive, send)
 
 
 class WhitebitHmacTransport(httpx.AsyncBaseTransport):
@@ -221,33 +237,27 @@ def _make_tool(subclient_attr: str | None, method_name: str, original_sig: inspe
         for name, p in original_sig.parameters.items()
         if name not in ("self", "request_options") and name not in _HMAC_FIELDS
     ]
-    # Remember which HMAC fields the method needs so we can inject dummies.
     needs_hmac_fields = {
         name for name in original_sig.parameters
         if name in _HMAC_FIELDS
     }
 
-    # HMAC endpoints need api_key + secret_key.
-    # authentication only needs api_key; account_endpoints need api_key + bearer_token.
-    _api_key_param = _CRED_PARAMS[0]
+    # account_endpoints still need a per-call bearer_token (OAuth2 access token).
     if is_account_endpoint:
-        new_sig = original_sig.replace(parameters=[_api_key_param, _SECRET_KEY_OPTIONAL, _BEARER_PARAM] + orig_params)
-    elif is_authentication:
-        new_sig = original_sig.replace(parameters=[_api_key_param, _SECRET_KEY_OPTIONAL] + orig_params)
+        new_sig = original_sig.replace(parameters=[_BEARER_PARAM] + orig_params)
     else:
-        new_sig = original_sig.replace(parameters=_CRED_PARAMS + orig_params)
+        new_sig = original_sig.replace(parameters=orig_params)
 
     async def tool(**kwargs):
-        api_key = kwargs.pop("api_key")
-        secret_key = kwargs.pop("secret_key", "")
+        api_key, secret_key = _get_credentials()
         bearer_token = kwargs.pop("bearer_token", "")
 
         needs_hmac = not is_authentication and not is_account_endpoint
         if not api_key or (needs_hmac and not secret_key):
             raise RuntimeError(
-                "❌ api_key and secret_key must be provided as tool parameters."
-                if needs_hmac else
-                "❌ api_key must be provided as tool parameter."
+                "❌ Credentials not configured. "
+                "HTTP transport: set X-WB-Api-Key / X-WB-Secret-Key request headers. "
+                "stdio transport: set WHITEBIT_API_KEY / WHITEBIT_SECRET_KEY env vars."
             )
         if is_account_endpoint and not bearer_token:
             raise RuntimeError(
@@ -256,7 +266,6 @@ def _make_tool(subclient_attr: str | None, method_name: str, original_sig: inspe
             )
 
         cleaned = {k: v for k, v in kwargs.items() if v is not None}
-        # Inject dummy values for HMAC signing fields — transport overwrites them.
         for field in needs_hmac_fields:
             cleaned.setdefault(field, "auto")
 
@@ -300,7 +309,7 @@ def _make_tool(subclient_attr: str | None, method_name: str, original_sig: inspe
         except Exception as exc:
             if _is_credentials_error(exc):
                 raise RuntimeError(
-                    f"❌ WhiteBit API auth/request error: {exc}"
+                    f"❌ WhiteBIT API auth/request error: {exc}"
                 ) from None
             raise
 
@@ -332,26 +341,36 @@ register_whitebit_tools()
 
 @mcp.tool(
     name="get_credentials_status",
-    description="Check whether WhiteBit API credentials are valid by echoing masked values.",
+    description="Check whether WhiteBit API credentials are configured by echoing masked values.",
 )
-async def get_credentials_status(api_key: str, secret_key: str) -> str:
+async def get_credentials_status() -> str:
+    api_key, secret_key = _get_credentials()
     base_url = os.environ.get("WHITEBIT_BASE_URL", "https://whitebit.com")
     if api_key and secret_key:
         masked_key = api_key[:4] + "****" + api_key[-4:] if len(api_key) > 8 else "****"
         masked_secret = "****" + secret_key[-4:] if len(secret_key) > 4 else "****"
         return (
-            f"✅ Credentials provided.\n"
+            f"✅ Credentials configured.\n"
             f"   API key:    {masked_key}\n"
             f"   Secret key: {masked_secret}\n"
             f"   Base URL:   {base_url}"
         )
-    return "❌ api_key and/or secret_key not provided."
+    return (
+        "❌ Credentials not configured. "
+        "HTTP transport: set X-WB-Api-Key / X-WB-Secret-Key request headers. "
+        "stdio transport: set WHITEBIT_API_KEY / WHITEBIT_SECRET_KEY env vars."
+    )
 
 
 def main() -> None:
-    """Entry point for `uvx whitebit-mcp` / `whitebit-mcp` console script (stdio transport)."""
+    """Entry point for `uvx whitebit-mcp` / `whitebit-mcp` console script (stdio transport).
+
+    Credentials are read from WHITEBIT_API_KEY / WHITEBIT_SECRET_KEY env vars.
+    """
     mcp.run()
 
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    starlette_app = mcp.streamable_http_app()
+    starlette_app.add_middleware(CredentialsMiddleware)
+    uvicorn.run(starlette_app, host="0.0.0.0", port=8000)

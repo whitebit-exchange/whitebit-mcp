@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import sys
 from pathlib import Path
 
@@ -22,15 +23,24 @@ def _server_entry(api_key: str, secret_key: str) -> dict:
     }
 
 
-def _merge_mcp_json(path: Path, entry: dict) -> None:
-    """Read existing JSON config, upsert mcpServers.whitebit, write back."""
+_STALE_KEYS = ("whitebit-mcp",)  # old HTTP-entry name written by previous versions
+
+
+def _merge_mcp_json(path: Path, entries: dict[str, dict]) -> None:
+    """Read existing JSON config, upsert mcpServers entries, write back.
+
+    Also removes stale keys left by older versions of this script.
+    """
     config: dict = {}
     if path.exists():
         try:
             config = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
-    config.setdefault("mcpServers", {})[MCP_SERVER_NAME] = entry
+    servers = config.setdefault("mcpServers", {})
+    for stale in _STALE_KEYS:
+        servers.pop(stale, None)
+    servers.update(entries)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
@@ -44,28 +54,45 @@ def setup_claude_desktop(entry: dict) -> Path | None:
         config_path = Path(appdata) / "Claude" / "claude_desktop_config.json"
     else:
         return None
-    _merge_mcp_json(config_path, entry)
+    _merge_mcp_json(config_path, {MCP_SERVER_NAME: entry})
     return config_path
 
 
 def setup_claude_code(entry: dict) -> Path:
     # User-level MCP config for Claude Code CLI
-    config_path = Path.home() / ".claude" / "mcp.json"
-    _merge_mcp_json(config_path, entry)
+    config_path = Path.home() / ".claude.json"
+    _merge_mcp_json(config_path, {MCP_SERVER_NAME: entry})
     return config_path
 
 
 def setup_cursor(entry: dict) -> Path:
     # Global Cursor MCP config
     config_path = Path.home() / ".cursor" / "mcp.json"
-    _merge_mcp_json(config_path, entry)
+    _merge_mcp_json(config_path, {MCP_SERVER_NAME: entry})
     return config_path
 
 
 def _merge_codex_toml(path: Path, api_key: str, secret_key: str) -> None:
-    """Upsert [mcp_servers.whitebit] block in Codex config.toml."""
+    """Upsert [mcp_servers.whitebit] block in Codex config.toml.
+
+    Works line-by-line to avoid false matches on TOML array literals like
+    args = ["whitebit-mcp"] that contain '['.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
+
+    # Drop all lines that belong to the whitebit section (header + subsections).
+    prefix = f"[mcp_servers.{MCP_SERVER_NAME}"
+    result: list[str] = []
+    inside = False
+    for line in existing.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            inside = True
+        elif stripped.startswith("[") and not stripped.startswith(prefix):
+            inside = False
+        if not inside:
+            result.append(line)
 
     block = (
         f"\n[mcp_servers.{MCP_SERVER_NAME}]\n"
@@ -76,28 +103,38 @@ def _merge_codex_toml(path: Path, api_key: str, secret_key: str) -> None:
         f'WHITEBIT_SECRET_KEY = "{secret_key}"\n'
     )
 
-    # Replace existing block if present, otherwise append
-    import re
-    pattern = rf"\[mcp_servers\.{MCP_SERVER_NAME}\].*?(?=\n\[|\Z)"
-    if re.search(pattern, existing, re.DOTALL):
-        updated = re.sub(pattern, block.strip(), existing, flags=re.DOTALL)
-    else:
-        updated = existing.rstrip() + block
-
-    path.write_text(updated, encoding="utf-8")
+    cleaned = "\n".join(result).rstrip()
+    path.write_text(cleaned + block, encoding="utf-8")
 
 
-def setup_codex(entry: dict, api_key: str = "", secret_key: str = "") -> Path:
+def setup_codex(api_key: str = "", secret_key: str = "") -> Path:
     # OpenAI Codex CLI uses TOML config
     config_path = Path.home() / ".codex" / "config.toml"
     _merge_codex_toml(config_path, api_key, secret_key)
     return config_path
 
 
+def _merge_openclaw_json(path: Path, entries: dict[str, dict]) -> None:
+    """Read existing OpenClaw config, upsert mcp.servers entries, write back.
+
+    OpenClaw uses {"mcp": {"servers": {...}}} — NOT the "mcpServers" top-level
+    key used by Claude Desktop/Code.  Writing "mcpServers" breaks OpenClaw.
+    """
+    config: dict = {}
+    if path.exists():
+        try:
+            config = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    config.setdefault("mcp", {}).setdefault("servers", {}).update(entries)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+
 def setup_openclaw(entry: dict) -> Path:
-    # OpenClaw gateway config
+    # OpenClaw uses mcp.servers nested structure (NOT mcpServers)
     config_path = Path.home() / ".openclaw" / "openclaw.json"
-    _merge_mcp_json(config_path, entry)
+    _merge_openclaw_json(config_path, {MCP_SERVER_NAME: entry})
     return config_path
 
 
@@ -127,7 +164,7 @@ def main() -> None:
     for name, fn in _TARGETS:
         try:
             if fn is setup_codex:
-                path = fn(entry, api_key=args.public, secret_key=args.secret)
+                path = fn(api_key=args.public, secret_key=args.secret)
             else:
                 path = fn(entry)
             if path is None:
