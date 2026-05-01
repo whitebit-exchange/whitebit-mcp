@@ -48,7 +48,7 @@ Before you start, make sure you have the following:
 ### 2. Start the server
 
 ```bash
-git clone https://github.com/your-org/whitebit-mcp.git
+git clone https://github.com/whitebit-exchange/whitebit-mcp.git
 cd whitebit-mcp
 docker compose up -d
 ```
