@@ -4,6 +4,8 @@ services:
     image: whitebit-mcp
     ports:
       - "8080:8000"
+    env_file:
+      - .env
     environment:
-      WHITEBIT_BASE_URL: ${WHITEBIT_BASE_URL:-https://whitebit.com}
+      - MCP_HOST=0.0.0.0
     restart: unless-stopped

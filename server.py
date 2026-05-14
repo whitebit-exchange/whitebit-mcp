@@ -3,9 +3,15 @@ import hashlib
 import hmac as _hmac
 import inspect
 import json
+import logging
 import os
+import re
+import secrets
 import time
 from contextvars import ContextVar
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+_log = logging.getLogger("whitebit_mcp")
 
 import httpx
 import uvicorn
@@ -41,7 +47,7 @@ from whitebit.client import AsyncWhitebitApi, OMIT
 #   stdio transport — env vars WHITEBIT_API_KEY / WHITEBIT_SECRET_KEY
 #
 # WHITEBIT_BASE_URL is an env-var-only setting (useful for testnet).
-# account_endpoints use OAuth2 Bearer auth; supply bearer_token per tool call.
+# account_endpoints use OAuth2 Bearer auth; supply via X-WB-Bearer-Token header or WHITEBIT_BEARER_TOKEN env var.
 # ---------------------------------------------------------------------------
 
 SUBCLIENT_CLASSES: dict[str, type] = {
@@ -71,14 +77,7 @@ _TOP_LEVEL_METHODS = ("convert_estimate", "convert_confirm", "convert_history")
 # Per-request credential storage (set by CredentialsMiddleware for HTTP transport).
 _api_key_var: ContextVar[str] = ContextVar("wb_api_key", default="")
 _secret_key_var: ContextVar[str] = ContextVar("wb_secret_key", default="")
-
-# bearer_token is still a per-call parameter for account_endpoints (OAuth2).
-_BEARER_PARAM = inspect.Parameter(
-    "bearer_token",
-    kind=inspect.Parameter.KEYWORD_ONLY,
-    annotation=str,
-    default="",
-)
+_bearer_token_var: ContextVar[str] = ContextVar("wb_bearer_token", default="")
 
 # HMAC signing fields injected by the transport — stripped from SDK method params.
 _HMAC_FIELDS = {"request", "nonce"}
@@ -99,10 +98,24 @@ def _get_credentials() -> tuple[str, str]:
     return api_key, secret_key
 
 
+def _get_bearer_token() -> str:
+    """Return OAuth2 bearer token from request context or env vars."""
+    return _bearer_token_var.get() or os.environ.get("WHITEBIT_BEARER_TOKEN", "")
+
+
+_ALLOWED_BASE_URL = re.compile(
+    r"^https://([a-z0-9-]+\.)?(whitebit\.(com|io)|imoney24\.technology)$"
+)
+
+
 def _get_environment() -> WhitebitApiEnvironment:
     global _ENV
     if _ENV is None:
         base_url = os.environ.get("WHITEBIT_BASE_URL", "https://whitebit.com")
+        if not _ALLOWED_BASE_URL.match(base_url):
+            raise ValueError(
+                f"WHITEBIT_BASE_URL must be an HTTPS whitebit.com/whitebit.io/imoney24.technology URL, got: {base_url!r}"
+            )
         _ENV = WhitebitApiEnvironment(
             base=base_url,
             production=WhitebitApiEnvironment.DEFAULT.production,
@@ -117,7 +130,7 @@ def _is_credentials_error(exc: Exception) -> bool:
 
 
 class CredentialsMiddleware:
-    """ASGI middleware: extracts X-WB-Api-Key / X-WB-Secret-Key headers into ContextVars."""
+    """ASGI middleware: extracts X-WB-Api-Key / X-WB-Secret-Key / X-WB-Bearer-Token headers into ContextVars."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -127,6 +140,7 @@ class CredentialsMiddleware:
             headers: dict[bytes, bytes] = dict(scope.get("headers", []))
             _api_key_var.set(headers.get(b"x-wb-api-key", b"").decode())
             _secret_key_var.set(headers.get(b"x-wb-secret-key", b"").decode())
+            _bearer_token_var.set(headers.get(b"x-wb-bearer-token", b"").decode())
         await self.app(scope, receive, send)
 
 
@@ -216,6 +230,31 @@ class WhitebitHmacTransport(httpx.AsyncBaseTransport):
         await self._inner.aclose()
 
 
+class MCPAuthMiddleware:
+    """ASGI middleware: enforces Bearer token auth on HTTP MCP endpoint.
+
+    Set MCP_AUTH_TOKEN env var to enable. If unset, middleware is a no-op
+    (stdio transport ignores it entirely).
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+        self._token = os.environ.get("MCP_AUTH_TOKEN", "")
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] in ("http", "websocket") and self._token:
+            headers = dict(scope.get("headers", []))
+            auth = headers.get(b"authorization", b"").decode()
+            expected = f"Bearer {self._token}"
+            if not secrets.compare_digest(auth, expected):
+                if scope["type"] == "http":
+                    await send({"type": "http.response.start", "status": 401,
+                                "headers": [(b"content-type", b"application/json")]})
+                    await send({"type": "http.response.body", "body": b'{"error":"Unauthorized"}'})
+                return
+        await self.app(scope, receive, send)
+
+
 class _NoAuthClientWrapper(AsyncClientWrapper):
     """AsyncClientWrapper that omits the Authorization header (for OAuth2 exchange endpoints)."""
 
@@ -223,7 +262,7 @@ class _NoAuthClientWrapper(AsyncClientWrapper):
         return {"X-Fern-Language": "Python", "X-TXC-APIKEY": self._txc_apikey}
 
 
-mcp = FastMCP("whitebit-mcp", host="0.0.0.0", port=8000)
+mcp = FastMCP("whitebit-mcp", host=os.environ.get("MCP_HOST", "127.0.0.1"), port=int(os.environ.get("MCP_PORT", "8000")))
 
 
 def _make_tool(subclient_attr: str | None, method_name: str, original_sig: inspect.Signature):
@@ -242,15 +281,11 @@ def _make_tool(subclient_attr: str | None, method_name: str, original_sig: inspe
         if name in _HMAC_FIELDS
     }
 
-    # account_endpoints still need a per-call bearer_token (OAuth2 access token).
-    if is_account_endpoint:
-        new_sig = original_sig.replace(parameters=[_BEARER_PARAM] + orig_params)
-    else:
-        new_sig = original_sig.replace(parameters=orig_params)
+    new_sig = original_sig.replace(parameters=orig_params)
 
     async def tool(**kwargs):
         api_key, secret_key = _get_credentials()
-        bearer_token = kwargs.pop("bearer_token", "")
+        bearer_token = _get_bearer_token()
 
         needs_hmac = not is_authentication and not is_account_endpoint
         if not api_key or (needs_hmac and not secret_key):
@@ -262,12 +297,16 @@ def _make_tool(subclient_attr: str | None, method_name: str, original_sig: inspe
         if is_account_endpoint and not bearer_token:
             raise RuntimeError(
                 "❌ account_endpoints require a bearer_token (OAuth2 access token). "
-                "Obtain one via authentication__get_access_token first."
+                "HTTP transport: set X-WB-Bearer-Token request header. "
+                "stdio transport: set WHITEBIT_BEARER_TOKEN env var."
             )
 
         cleaned = {k: v for k, v in kwargs.items() if v is not None}
         for field in needs_hmac_fields:
             cleaned.setdefault(field, "auto")
+
+        _masked_key = (api_key[:4] + "…" + api_key[-4:]) if len(api_key) > 8 else "****"
+        _log.info("tool_call tool=%s key=%s", method_name, _masked_key)
 
         try:
             if subclient_attr is None:
@@ -373,4 +412,7 @@ def main() -> None:
 if __name__ == "__main__":
     starlette_app = mcp.streamable_http_app()
     starlette_app.add_middleware(CredentialsMiddleware)
-    uvicorn.run(starlette_app, host="0.0.0.0", port=8000)
+    starlette_app.add_middleware(MCPAuthMiddleware)
+    _host = os.environ.get("MCP_HOST", "127.0.0.1")
+    _port = int(os.environ.get("MCP_PORT", "8000"))
+    uvicorn.run(starlette_app, host=_host, port=_port)
