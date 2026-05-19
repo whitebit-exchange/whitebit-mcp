@@ -84,7 +84,19 @@ docker-compose ps
 
 ### Step 2 — Connect your AI tool
 
-**Claude Code**
+**All tools at once (recommended)**
+
+```bash
+uvx --from whitebit-mcp whitebit-mcp-setup --public=YOUR_API_KEY --secret=YOUR_SECRET_KEY --docker
+```
+
+This configures Claude Code, Claude Desktop, Cursor, Codex, and OpenClaw in one shot.
+
+**Or configure manually per tool:**
+
+<details>
+<summary>Claude Code</summary>
+
 ```bash
 claude mcp add whitebit "http://localhost:8080/mcp" \
   -s user \
@@ -92,8 +104,12 @@ claude mcp add whitebit "http://localhost:8080/mcp" \
   -H "X-WB-Api-Key: YOUR_API_KEY" \
   -H "X-WB-Secret-Key: YOUR_SECRET_KEY"
 ```
+</details>
 
-**Claude Desktop** — add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+<details>
+<summary>Claude Desktop</summary>
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 ```json
 {
   "mcpServers": {
@@ -108,8 +124,12 @@ claude mcp add whitebit "http://localhost:8080/mcp" \
   }
 }
 ```
+</details>
 
-**Cursor** — add to `~/.cursor/mcp.json`:
+<details>
+<summary>Cursor</summary>
+
+Add to `~/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
@@ -124,11 +144,15 @@ claude mcp add whitebit "http://localhost:8080/mcp" \
   }
 }
 ```
+</details>
 
-**OpenClaw**
+<details>
+<summary>OpenClaw</summary>
+
 ```bash
 openclaw mcp set whitebit '{"url":"http://localhost:8080/mcp","headers":{"X-WB-Api-Key":"YOUR_API_KEY","X-WB-Secret-Key":"YOUR_SECRET_KEY"}}'
 ```
+</details>
 
 ### Step 3 — Restart your AI tool and test
 
@@ -163,7 +187,7 @@ Private endpoints (balance, trading) require both API key and secret.
 ## Troubleshooting
 
 **"No tools available" / MCP not connecting**
-- Option A: make sure `uv` is installed and on PATH; try `uvx --version`
+- Option A: make sure `uv` is installed and on PATH; try `uvx --version`; check the process is running with `ps aux | grep whitebit-mcp`
 - Option B: check `docker-compose ps` — container must show `Up`; check `docker-compose logs`
 - Restart your AI tool after configuring
 

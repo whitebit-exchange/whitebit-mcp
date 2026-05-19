@@ -17,7 +17,7 @@
 
 Works with **Claude Code**, **Claude Desktop**, **Cursor**, and any other MCP-compatible client.
 
-> **Credentials are passed as tool parameters** (`api_key`, `secret_key`), not as server-level configuration. This means you can use different WhiteBit accounts within the same session without restarting the server.
+> **Credentials are supplied at connection time**, not as tool parameters. HTTP/Docker transport: pass `X-WB-Api-Key` and `X-WB-Secret-Key` request headers. stdio/uvx transport: set `WHITEBIT_API_KEY` and `WHITEBIT_SECRET_KEY` environment variables.
 
 ---
 
@@ -53,7 +53,7 @@ cd whitebit-mcp
 docker compose up -d
 ```
 
-The server starts at `http://localhost:8000`.
+The server starts at `http://localhost:8080`.
 
 ### 3. Add to your AI client
 
@@ -66,7 +66,11 @@ Create or update `.mcp.json` in your project root:
   "mcpServers": {
     "whitebit-mcp": {
       "type": "http",
-      "url": "http://localhost:8000/mcp"
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "X-WB-Api-Key": "YOUR_API_KEY",
+        "X-WB-Secret-Key": "YOUR_SECRET_KEY"
+      }
     }
   }
 }
@@ -75,10 +79,11 @@ Create or update `.mcp.json` in your project root:
 Or via CLI:
 
 ```bash
-claude mcp add whitebit-mcp "http://localhost:8000/mcp" -t http -s user
+claude mcp add whitebit-mcp "http://localhost:8080/mcp" \
+  -t http -s user \
+  -H "X-WB-Api-Key: YOUR_API_KEY" \
+  -H "X-WB-Secret-Key: YOUR_SECRET_KEY"
 ```
-
-> Credentials (`api_key`, `secret_key`) are passed directly to each tool call — the server does not store them.
 
 That's it. Your AI can now trade on WhiteBit.
 
@@ -91,7 +96,10 @@ That's it. Your AI can now trade on WhiteBit.
 Install the [Claude extension for VS Code](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-code), then add the server via CLI:
 
 ```bash
-claude mcp add whitebit-mcp "http://localhost:8000/mcp" -t http -s user
+claude mcp add whitebit-mcp "http://localhost:8080/mcp" \
+  -t http -s user \
+  -H "X-WB-Api-Key: YOUR_API_KEY" \
+  -H "X-WB-Secret-Key: YOUR_SECRET_KEY"
 ```
 
 Or create `.mcp.json` in your project root to share the config with your team:
@@ -101,7 +109,11 @@ Or create `.mcp.json` in your project root to share the config with your team:
   "mcpServers": {
     "whitebit-mcp": {
       "type": "http",
-      "url": "http://localhost:8000/mcp"
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "X-WB-Api-Key": "YOUR_API_KEY",
+        "X-WB-Secret-Key": "YOUR_SECRET_KEY"
+      }
     }
   }
 }
@@ -120,7 +132,11 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
   "mcpServers": {
     "whitebit-mcp": {
       "type": "http",
-      "url": "http://localhost:8000/mcp"
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "X-WB-Api-Key": "YOUR_API_KEY",
+        "X-WB-Secret-Key": "YOUR_SECRET_KEY"
+      }
     }
   }
 }
@@ -135,7 +151,11 @@ Add to your Cursor MCP settings (`~/.cursor/mcp.json`):
   "mcpServers": {
     "whitebit-mcp": {
       "type": "http",
-      "url": "http://localhost:8000/mcp"
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "X-WB-Api-Key": "YOUR_API_KEY",
+        "X-WB-Secret-Key": "YOUR_SECRET_KEY"
+      }
     }
   }
 }
@@ -146,23 +166,14 @@ Add to your Cursor MCP settings (`~/.cursor/mcp.json`):
 Add to your Codex MCP settings (`~/.codex/config.toml`):
 
 ```toml
-[[mcp_servers]]
-name = "whitebit-mcp"
+[mcp_servers.whitebit-mcp]
 type = "http"
-url  = "http://localhost:8000/mcp"
+url  = "http://localhost:8080/mcp"
+
+[mcp_servers.whitebit-mcp.headers]
+"X-WB-Api-Key"    = "YOUR_API_KEY"
+"X-WB-Secret-Key" = "YOUR_SECRET_KEY"
 ```
-
-Or using the JSON format (`~/.codex/mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "whitebit-mcp": {
-      "type": "http",
-      "url": "http://localhost:8000/mcp"
-    }
-  }
-}
 ```
 
 ### OpenClaw
@@ -170,7 +181,7 @@ Or using the JSON format (`~/.codex/mcp.json`):
 Add via CLI:
 
 ```bash
-openclaw mcp set whitebit-mcp '{"url":"http://localhost:8000/mcp"}'
+openclaw mcp set whitebit-mcp '{"url":"http://localhost:8080/mcp","headers":{"X-WB-Api-Key":"YOUR_API_KEY","X-WB-Secret-Key":"YOUR_SECRET_KEY"}}'
 ```
 
 Or add to your OpenClaw config under `mcp.servers`:
@@ -180,7 +191,11 @@ Or add to your OpenClaw config under `mcp.servers`:
   "mcp": {
     "servers": {
       "whitebit-mcp": {
-        "url": "http://localhost:8000/mcp"
+        "url": "http://localhost:8080/mcp",
+        "headers": {
+          "X-WB-Api-Key": "YOUR_API_KEY",
+          "X-WB-Secret-Key": "YOUR_SECRET_KEY"
+        }
       }
     }
   }
@@ -189,13 +204,13 @@ Or add to your OpenClaw config under `mcp.servers`:
 
 ### Any MCP-compatible client
 
-The server uses standard **Streamable HTTP transport** on `http://localhost:8000/mcp`. No server-level authentication is required — credentials are supplied per tool call.
+The server uses standard **Streamable HTTP transport** on `http://localhost:8080/mcp`. Pass your API credentials in `X-WB-Api-Key` and `X-WB-Secret-Key` request headers — the server never stores them.
 
 ---
 
 ## Usage Examples
 
-Once connected, talk to your AI naturally. It will prompt you for credentials when needed:
+Once connected, talk to your AI naturally:
 
 ```
 "What's the current BTC/USDT price?"
@@ -212,17 +227,20 @@ Once connected, talk to your AI naturally. It will prompt you for credentials wh
 
 ## How Credentials Work
 
-Unlike header-based servers, this server receives `api_key` and `secret_key` as explicit parameters on every tool call. The AI assistant supplies them from the conversation context.
+Credentials are supplied at connection time — not as tool parameters. The server reads them once per request and applies them to every API call automatically.
 
-| Endpoint type | Required parameters |
-|---------------|---------------------|
-| Public (market data) | `api_key`, `secret_key` |
-| Private (trading, account) | `api_key`, `secret_key` |
-| Account endpoints (OAuth2) | `api_key`, `bearer_token` |
+| Transport | How to supply credentials |
+|-----------|--------------------------|
+| **HTTP / Docker** | `X-WB-Api-Key` and `X-WB-Secret-Key` request headers |
+| **stdio / uvx** | `WHITEBIT_API_KEY` and `WHITEBIT_SECRET_KEY` environment variables |
 
-To obtain a `bearer_token` for account endpoints, use the `authentication__get_access_token` tool first.
+| Endpoint type | What is needed |
+|---------------|---------------|
+| Public (market data) | No credentials required |
+| Private (trading, account) | API key + secret key |
+| Account endpoints (OAuth2) | API key + `X-WB-Bearer-Token` header (obtain via `authentication__get_access_token`) |
 
-Use `get_credentials_status` to verify that credentials are being passed correctly.
+Use `get_credentials_status` to verify that credentials are configured correctly.
 
 ---
 
@@ -275,7 +293,7 @@ Tools are named `{category}__{method}` (e.g. `spot_trading__create_limit_order`)
 
 ## Security
 
-- Credentials are passed per tool call — **never stored** in server memory or logs
+- Credentials are read from headers/env vars — **never stored** in server memory or logs, **never passed as tool parameters to the AI**
 - Use **read-only API keys** if you only need market data or account queries
 - For trading, create a dedicated API key with only the permissions you need
 - Consider IP whitelisting on your WhiteBit API key for additional protection
@@ -293,7 +311,7 @@ pip install -r requirements.txt
 python server.py
 ```
 
-The server listens on `PORT` (default `8000`).
+The server listens on `PORT` (default `8000`). When running via Docker the host port is `8080` (mapped in `docker-compose.yml`).
 
 ---
 
