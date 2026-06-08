@@ -6,6 +6,7 @@ import getpass
 import json
 import os
 import platform
+import shutil
 import stat
 import subprocess
 import sys
@@ -20,9 +21,12 @@ _LOCAL_PKG_DIR = Path(__file__).parent
 # ---------------------------------------------------------------------------
 
 def _stdio_entry(api_key: str, secret_key: str, base_url: str, local: bool = False) -> dict:
+    # Use the full path to uvx so Claude Desktop (which launches processes without
+    # the user's shell PATH) can find the binary (e.g. ~/.local/bin/uvx).
+    uvx = shutil.which("uvx") or "uvx"
     args = ["--from", str(_LOCAL_PKG_DIR), "whitebit-mcp"] if local else ["whitebit-mcp"]
     return {
-        "command": "uvx",
+        "command": uvx,
         "args": args,
         "env": {
             "WHITEBIT_API_KEY": api_key,
@@ -90,6 +94,14 @@ def setup_claude_desktop(entry: dict) -> Path | None:
     return config_path
 
 
+def _claude_code_paths() -> tuple[Path, Path]:
+    """Return (settings.json path, claude_code_config.json path) for the current OS."""
+    base = Path.home() / ".claude"
+    if platform.system() == "Windows":
+        base = Path(os.environ.get("USERPROFILE", Path.home())) / ".claude"
+    return base / "settings.json", base / "claude_code_config.json"
+
+
 def setup_claude_code_stdio(
     entry: dict,
     *,
@@ -98,7 +110,7 @@ def setup_claude_code_stdio(
     base_url: str,
     local: bool,
 ) -> Path:
-    """Use `claude mcp add` (stdio) if available; fall back to ~/.claude.json."""
+    """Use `claude mcp add` (stdio) if available, then write to both Claude Code config files."""
     uvx_args = ["--from", str(_LOCAL_PKG_DIR), "whitebit-mcp"] if local else ["whitebit-mcp"]
     cmd = [
         "claude", "mcp", "add",
@@ -110,19 +122,19 @@ def setup_claude_code_stdio(
         "--", "uvx", *uvx_args,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            return Path.home() / ".claude.json"
+        subprocess.run(cmd, capture_output=True, text=True)
     except FileNotFoundError:
         pass
-    # Fallback: write directly to ~/.claude.json (user-level Claude Code config)
-    config_path = Path.home() / ".claude.json"
+    # Write to both paths: settings.json (used by `claude mcp add`) and
+    # claude_code_config.json (shown by `claude /doctor` as the documented path).
+    settings_path, config_path = _claude_code_paths()
+    _merge_mcp_json(settings_path, {MCP_SERVER_NAME: entry})
     _merge_mcp_json(config_path, {MCP_SERVER_NAME: entry})
-    return config_path
+    return settings_path
 
 
 def setup_claude_code_docker(entry: dict, *, api_key: str, secret_key: str, port: int) -> Path:
-    """Use `claude mcp add` (HTTP) if available; fall back to ~/.claude.json."""
+    """Use `claude mcp add` (HTTP) if available, then write to both Claude Code config files."""
     url = f"http://localhost:{port}/mcp"
     cmd = [
         "claude", "mcp", "add",
@@ -134,14 +146,13 @@ def setup_claude_code_docker(entry: dict, *, api_key: str, secret_key: str, port
         url,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            return Path.home() / ".claude.json"
+        subprocess.run(cmd, capture_output=True, text=True)
     except FileNotFoundError:
         pass
-    config_path = Path.home() / ".claude.json"
+    settings_path, config_path = _claude_code_paths()
+    _merge_mcp_json(settings_path, {MCP_SERVER_NAME: entry})
     _merge_mcp_json(config_path, {MCP_SERVER_NAME: entry})
-    return config_path
+    return settings_path
 
 
 def setup_cursor(entry: dict) -> Path:

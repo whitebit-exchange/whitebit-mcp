@@ -4,14 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "whitebit-mcp"
-version = "2.0.1"
+version = "2.0.2"
 description = "MCP server that exposes the WhiteBIT exchange API as AI tools"
 license = { text = "MIT" }
 requires-python = ">=3.12"
 dependencies = [
     "whitebit-python-sdk>=1.1.6",
     "mcp[cli]>=1.0.0",
-    "urllib3>=2.7.0",  # pin floor: whitebit-python-sdk pulls responses which downgrades urllib3 to 1.x (CVE-2025-50181 et al.)
 ]
 
 [project.optional-dependencies]

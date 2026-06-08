@@ -50,6 +50,14 @@ uvx --from whitebit-mcp whitebit-mcp-setup --public=YOUR_API_KEY --secret=YOUR_S
 This writes config for **Claude Code, Claude Desktop, Cursor, Codex, and OpenClaw** in one shot.
 You will be prompted for the secret key if you omit `--secret`.
 
+Config file locations written by this command:
+
+| Tool | Path |
+|------|------|
+| Claude Code | `~/.claude/settings.json` + `~/.claude/claude_code_config.json` (macOS/Linux) · `%USERPROFILE%\.claude\` (Windows) |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) · `%APPDATA%\Claude\claude_desktop_config.json` (Windows) |
+| Cursor | `~/.cursor/mcp.json` |
+
 ### Step 3 — Restart your AI tool
 
 ```bash
