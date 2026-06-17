@@ -20,11 +20,12 @@ _LOCAL_PKG_DIR = Path(__file__).parent
 # stdio entry (uvx transport)
 # ---------------------------------------------------------------------------
 
-def _stdio_entry(api_key: str, secret_key: str, base_url: str, local: bool = False) -> dict:
+def _stdio_entry(api_key: str, secret_key: str, base_url: str, local: bool = False, local_pkg_dir: Path | None = None) -> dict:
     # Use the full path to uvx so Claude Desktop (which launches processes without
     # the user's shell PATH) can find the binary (e.g. ~/.local/bin/uvx).
     uvx = shutil.which("uvx") or "uvx"
-    args = ["--from", str(_LOCAL_PKG_DIR), "whitebit-mcp"] if local else ["whitebit-mcp"]
+    pkg_dir = local_pkg_dir or _LOCAL_PKG_DIR
+    args = ["--from", str(pkg_dir), "whitebit-mcp"] if local else ["whitebit-mcp"]
     return {
         "command": uvx,
         "args": args,
@@ -109,9 +110,11 @@ def setup_claude_code_stdio(
     secret_key: str,
     base_url: str,
     local: bool,
+    local_pkg_dir: Path | None = None,
 ) -> Path:
     """Use `claude mcp add` (stdio) if available, then write to both Claude Code config files."""
-    uvx_args = ["--from", str(_LOCAL_PKG_DIR), "whitebit-mcp"] if local else ["whitebit-mcp"]
+    pkg_dir = local_pkg_dir or _LOCAL_PKG_DIR
+    uvx_args = ["--from", str(pkg_dir), "whitebit-mcp"] if local else ["whitebit-mcp"]
     cmd = [
         "claude", "mcp", "add",
         MCP_SERVER_NAME,
@@ -162,7 +165,7 @@ def setup_cursor(entry: dict) -> Path:
 
 
 def _merge_codex_toml_stdio(
-    path: Path, api_key: str, secret_key: str, base_url: str, local: bool
+    path: Path, api_key: str, secret_key: str, base_url: str, local: bool, local_pkg_dir: Path | None = None
 ) -> None:
     """Upsert [mcp_servers.whitebit] stdio block in Codex config.toml."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -180,8 +183,9 @@ def _merge_codex_toml_stdio(
         if not inside:
             result.append(line)
 
+    pkg_dir = local_pkg_dir or _LOCAL_PKG_DIR
     uvx_args_line = (
-        f'args = ["--from", "{_LOCAL_PKG_DIR}", "whitebit-mcp"]\n' if local
+        f'args = ["--from", "{pkg_dir}", "whitebit-mcp"]\n' if local
         else 'args = ["whitebit-mcp"]\n'
     )
     block = (
@@ -225,10 +229,10 @@ def _merge_codex_toml_docker(path: Path, api_key: str, secret_key: str, port: in
 
 
 def setup_codex_stdio(
-    api_key: str = "", secret_key: str = "", base_url: str = "", local: bool = False
+    api_key: str = "", secret_key: str = "", base_url: str = "", local: bool = False, local_pkg_dir: Path | None = None
 ) -> Path:
     config_path = Path.home() / ".codex" / "config.toml"
-    _merge_codex_toml_stdio(config_path, api_key, secret_key, base_url, local)
+    _merge_codex_toml_stdio(config_path, api_key, secret_key, base_url, local, local_pkg_dir)
     return config_path
 
 
@@ -289,8 +293,10 @@ def main() -> None:
             "Examples:\n"
             "  # stdio via uvx (PyPI)\n"
             "  whitebit-mcp-setup --public=KEY\n\n"
-            "  # stdio via uvx, staging, local package\n"
+            "  # stdio via uvx, staging, local package (run directly)\n"
             "  whitebit-mcp-setup --public=KEY --base-url=https://st.imoney24.technology --local\n\n"
+            "  # stdio via uvx, local package (run via uvx --from .)\n"
+            "  whitebit-mcp-setup --public=KEY --local --local-path=/path/to/whitebit-mcp\n\n"
             "  # Docker HTTP transport (requires running container)\n"
             "  whitebit-mcp-setup --public=KEY --docker\n\n"
             "  # Docker on custom port\n"
@@ -310,6 +316,11 @@ def main() -> None:
         "--local",
         action="store_true",
         help="stdio mode: use local package directory instead of PyPI (for development)",
+    )
+    parser.add_argument(
+        "--local-path",
+        metavar="PATH",
+        help="explicit path to local whitebit-mcp source directory (use when running via uvx --from .)",
     )
     parser.add_argument(
         "--docker",
@@ -339,10 +350,21 @@ def main() -> None:
     base_url: str = args.base_url
     port: int = args.port
 
+    local_pkg_dir: Path | None = None
+    if args.local_path:
+        local_pkg_dir = Path(args.local_path).resolve()
+    elif local and ".cache/uv" in str(_LOCAL_PKG_DIR):
+        print(
+            "⚠  Warning: --local was set but the detected package directory looks like a uv cache:\n"
+            f"   {_LOCAL_PKG_DIR}\n"
+            "   Use --local-path=/path/to/whitebit-mcp to point to your source directory.\n",
+            file=sys.stderr,
+        )
+
     if docker:
         entry = _http_entry(args.public, secret_key, port)
     else:
-        entry = _stdio_entry(args.public, secret_key, base_url, local)
+        entry = _stdio_entry(args.public, secret_key, base_url, local, local_pkg_dir)
 
     print(f"\nWhiteBit MCP setup ({'Docker/HTTP' if docker else 'stdio/uvx'})\n")
     written: list[Path] = []
@@ -359,11 +381,11 @@ def main() -> None:
     for name, fn in targets:
         try:
             if fn is setup_claude_code_stdio:
-                path = fn(entry, api_key=args.public, secret_key=secret_key, base_url=base_url, local=local)
+                path = fn(entry, api_key=args.public, secret_key=secret_key, base_url=base_url, local=local, local_pkg_dir=local_pkg_dir)
             elif fn is setup_claude_code_docker:
                 path = fn(entry, api_key=args.public, secret_key=secret_key, port=port)
             elif fn is setup_codex_stdio:
-                path = fn(api_key=args.public, secret_key=secret_key, base_url=base_url, local=local)
+                path = fn(api_key=args.public, secret_key=secret_key, base_url=base_url, local=local, local_pkg_dir=local_pkg_dir)
             elif fn is setup_codex_docker:
                 path = fn(api_key=args.public, secret_key=secret_key, port=port)
             else:

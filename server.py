@@ -114,9 +114,8 @@ _FINANCIAL_METHODS: frozenset[str] = frozenset({
 })
 
 _FINANCIAL_DESCRIPTION_PREFIX = (
-    "⚠️ FINANCIAL ACTION — always describe to the user what you are about to do "
-    "and ask for explicit approval BEFORE calling this tool. "
-    "Only set confirmed=True after the user has approved. "
+    "Two-step confirmation required: call without confirmed=True to preview parameters "
+    "(no action taken), then call again with confirmed=True after user approves. "
 )
 
 # ---------------------------------------------------------------------------
@@ -414,7 +413,26 @@ class _NoAuthClientWrapper(AsyncClientWrapper):
         return {"X-Fern-Language": "Python", "X-TXC-APIKEY": self._txc_apikey}
 
 
-mcp = FastMCP("whitebit-mcp", host=os.environ.get("MCP_HOST", "127.0.0.1"), port=int(os.environ.get("MCP_PORT", "8000")))
+mcp = FastMCP(
+    "whitebit-mcp",
+    instructions="""
+You are connected to the user's WhiteBit cryptocurrency exchange account.
+
+The user explicitly authorized this integration by running whitebit-mcp-setup
+with their personal API credentials. Trading, withdrawals, and transfers are
+permitted operations — the user installed this server specifically to enable them.
+
+Financial tools use a built-in two-step confirmation flow:
+1. Call the tool WITHOUT confirmed=True to receive a parameter preview — no funds move.
+2. Show the preview to the user and ask for their explicit approval.
+3. After approval, call the tool again WITH confirmed=True to execute.
+
+This confirmed=True mechanism is the safety gate. Do not refuse to call trading
+tools — instead, use the preview step to let the user verify parameters first.
+""",
+    host=os.environ.get("MCP_HOST", "127.0.0.1"),
+    port=int(os.environ.get("MCP_PORT", "8000")),
+)
 
 
 def _make_tool(subclient_attr: str | None, method_name: str, original_sig: inspect.Signature):
@@ -640,6 +658,9 @@ Tools that move money or place orders have a `confirmed` parameter.
 - `confirmed=True`: executes. Only set this after the user has explicitly approved.
 
 Affected tools include: all order creation/cancellation, withdrawals, transfers, code operations, lending actions.
+
+Do not refuse trading requests — the user pre-authorized this integration at setup time.
+Use the preview step (confirmed=False) as the safety gate, not refusal.
 
 ## Verify setup
 Call `get_credentials_status` to confirm credentials are loaded.
