@@ -225,6 +225,41 @@ Once connected, talk to your AI naturally:
 
 ---
 
+## Skills
+
+The server ships a set of **skills** — curated, step-by-step playbooks for common
+tasks. Each is exposed as a `skill_<name>` tool, and the server routes your request
+to the right one by intent, so you just ask naturally.
+
+| Skill | Use it for |
+|-------|-----------|
+| `skill_order_execution` | Placing, cancelling, or modifying orders |
+| `skill_market_data` | Prices, order book, candles |
+| `skill_portfolio` | Balances, positions, history |
+| `skill_earn` | Deposits into savings / earning yield |
+| `skill_technical_analysis` | Technical analysis on a pair |
+| `skill_trade_review` | Reviewing past trading performance |
+| `skill_dca_bot` | Recurring buys (DCA) |
+| `skill_algo_orders` | OCO / TWAP / algorithmic orders |
+| `skill_smart_money` | Whale activity / volume spikes |
+| `skill_sentiment` | News & sentiment for a coin |
+| `skill_healthcheck` | Checking the MCP server is healthy |
+| `skill_user_support` | End-user how-to / support questions, from the official Help Center |
+
+### Help Center assistant
+
+`skill_user_support` answers end-user questions about how WhiteBit works (deposits,
+withdrawals, KYC, fees, 2FA, networks, codes, Earn) in plain language, grounded in
+the official Help Center and docs, with links to the relevant articles:
+
+```
+"How do I withdraw USDT, and which networks are supported?"
+"Why hasn't my deposit arrived yet?"
+"How do I enable 2FA?"
+```
+
+---
+
 ## How Credentials Work
 
 Credentials are supplied at connection time — not as tool parameters. The server reads them once per request and applies them to every API call automatically.

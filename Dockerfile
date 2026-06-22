@@ -15,7 +15,8 @@ ENV PYTHONUNBUFFERED=1
 
 RUN useradd -m -u 1000 appuser
 WORKDIR /app
-COPY server.py .
+COPY server.py aliases.py skills_loader.py ./
+COPY skills ./skills
 RUN chown -R appuser:appuser /app
 
 USER appuser

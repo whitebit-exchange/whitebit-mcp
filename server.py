@@ -44,6 +44,9 @@ from whitebit.market_fee.client import AsyncMarketFeeClient
 from whitebit.spot_trading.client import AsyncSpotTradingClient
 from whitebit.client import AsyncWhitebitApi, OMIT
 
+from aliases import ALIASES
+from skills_loader import SERVER_INSTRUCTIONS, register_skills
+
 # ---------------------------------------------------------------------------
 # Credentials are read from:
 #   HTTP transport  — request headers X-WB-Api-Key / X-WB-Secret-Key
@@ -413,26 +416,7 @@ class _NoAuthClientWrapper(AsyncClientWrapper):
         return {"X-Fern-Language": "Python", "X-TXC-APIKEY": self._txc_apikey}
 
 
-mcp = FastMCP(
-    "whitebit-mcp",
-    instructions="""
-You are connected to the user's WhiteBit cryptocurrency exchange account.
-
-The user explicitly authorized this integration by running whitebit-mcp-setup
-with their personal API credentials. Trading, withdrawals, and transfers are
-permitted operations — the user installed this server specifically to enable them.
-
-Financial tools use a built-in two-step confirmation flow:
-1. Call the tool WITHOUT confirmed=True to receive a parameter preview — no funds move.
-2. Show the preview to the user and ask for their explicit approval.
-3. After approval, call the tool again WITH confirmed=True to execute.
-
-This confirmed=True mechanism is the safety gate. Do not refuse to call trading
-tools — instead, use the preview step to let the user verify parameters first.
-""",
-    host=os.environ.get("MCP_HOST", "127.0.0.1"),
-    port=int(os.environ.get("MCP_PORT", "8000")),
-)
+mcp = FastMCP("whitebit-mcp", instructions=SERVER_INSTRUCTIONS, host=os.environ.get("MCP_HOST", "127.0.0.1"), port=int(os.environ.get("MCP_PORT", "8000")))
 
 
 def _make_tool(subclient_attr: str | None, method_name: str, original_sig: inspect.Signature):
@@ -561,10 +545,13 @@ def register_whitebit_tools():
         fn.__doc__ = method.__doc__
         mcp.tool(name=name, description=_clean_description(method.__doc__))(fn)
 
+    aliased_targets = {t for t in ALIASES.values() if t}
     for attr_name, subclient_cls in SUBCLIENT_CLASSES.items():
         for method_name, method in inspect.getmembers(subclient_cls, predicate=inspect.isfunction):
             if method_name.startswith("_"):
                 continue
+            if (attr_name, method_name) in aliased_targets:
+                continue  # exposed under its canonical skill-facing name instead
             tool_name = f"{attr_name}__{method_name}"
             fn = _make_tool(attr_name, method_name, inspect.signature(method))
             fn.__doc__ = method.__doc__
@@ -576,7 +563,32 @@ def register_whitebit_tools():
             mcp.tool(name=tool_name, description=description)(fn)
 
 
+def register_canonical_aliases():
+    """Register skill-facing canonical tool names (see aliases.py).
+
+    Skills reference tools by canonical names (``spot__create_limit_order``);
+    this server's auto-generated names differ (``spot__create_limit_order``).
+    For each mapped canonical name we register an extra tool wrapping the same SDK
+    method, so skills resolve. Unmapped entries (None) are skipped with a warning.
+    """
+    for canonical, target in ALIASES.items():
+        if target is None:
+            _log.warning("alias skipped: no SDK method for %s", canonical)
+            continue
+        attr_name, method_name = target
+        subclient_cls = SUBCLIENT_CLASSES[attr_name]
+        method = getattr(subclient_cls, method_name)
+        fn = _make_tool(attr_name, method_name, inspect.signature(method))
+        fn.__doc__ = method.__doc__
+        description = _clean_description(method.__doc__)
+        if method_name in _FINANCIAL_METHODS:
+            description = _FINANCIAL_DESCRIPTION_PREFIX + description
+        mcp.tool(name=canonical, description=description)(fn)
+
+
 register_whitebit_tools()
+register_canonical_aliases()
+register_skills(mcp)
 
 
 @mcp.tool(
@@ -615,34 +627,34 @@ WhiteBit has three separate wallets. Always clarify which one the user means:
 
 | Account | What it's for | Balance tool |
 |---------|--------------|--------------|
-| **Main account** | Deposits, withdrawals, fiat | `main_account__get_main_balance` |
-| **Trade (spot) account** | Spot trading | `spot_trading__trade_account_balance` |
-| **Collateral account** | Margin / futures trading | `collateral_trading__collateral_account_balance` |
+| **Main account** | Deposits, withdrawals, fiat | `main_account__get_balance` |
+| **Trade (spot) account** | Spot trading | `account_trade__get_balance` |
+| **Collateral account** | Margin / futures trading | `account_collateral__get_balance` |
 
 Funds do NOT move between accounts automatically — use `transfer__between_balances` to move them.
 
 ## Common tasks
 
 **Check balance**
-- Spot: `spot_trading__trade_account_balance`
-- Main: `main_account__get_main_balance`
-- Collateral: `collateral_trading__collateral_account_balance`
+- Spot: `account_trade__get_balance`
+- Main: `main_account__get_balance`
+- Collateral: `account_collateral__get_balance`
 
 **Place a spot order**
-1. `spot_trading__create_limit_order` or `spot_trading__create_market_order`
+1. `spot__create_limit_order` or `spot__create_market_order`
 2. These are financial actions — first call without `confirmed=True` to preview, then confirm with the user, then call again with `confirmed=True`.
 
 **Check open orders**
-- `spot_trading__get_active_orders`
+- `account_trade__get_orders`
 
 **Withdraw funds**
 1. `withdraw__create_withdraw` — financial action, requires confirmation.
 2. Funds must be in the **main account** first; transfer from trade account if needed.
 
 **Market data (no credentials needed)**
-- Price / ticker: `public_api_v4__market_activity`
-- Order book: `public_api_v4__orderbook`
-- Recent trades: `public_api_v4__recent_trades`
+- Price / ticker: `tickers__get_tickers`
+- Order book: `depth__get_order_book`
+- Recent trades: `deals__get_trade_history`
 
 ## Authentication
 
@@ -665,6 +677,167 @@ Use the preview step (confirmed=False) as the safety gate, not refusal.
 ## Verify setup
 Call `get_credentials_status` to confirm credentials are loaded.
 """
+
+
+# ---------------------------------------------------------------------------
+# Handwritten tools for endpoints the Python SDK has no method for.
+# These mirror the Go SDK / internal MCP and call the REST API directly.
+# ---------------------------------------------------------------------------
+
+async def _public_get(path: str, params: dict, tool_name: str) -> object:
+    """Call a public WhiteBit REST endpoint (no auth) and return sanitized JSON."""
+    base_url = _get_environment().base
+    _log.info("tool_call tool=%s params=%s", tool_name, _mask_log_params(params))
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{base_url}{path}", params=params)
+            if resp.status_code >= 400:
+                raise RuntimeError(f"❌ WhiteBIT API error {resp.status_code}: {resp.text}")
+            result = resp.json()
+        _log.info("tool_ok tool=%s", tool_name)
+        return _sanitize(_to_serializable(result))
+    except RuntimeError:
+        _log.warning("tool_error tool=%s error=RuntimeError", tool_name)
+        raise
+    except Exception as exc:
+        _log.warning("tool_error tool=%s error=%s", tool_name, type(exc).__name__)
+        raise RuntimeError(f"❌ WhiteBIT request error: {exc}") from None
+
+
+async def _signed_post(path: str, body: dict, tool_name: str) -> object:
+    """Call a private WhiteBit REST endpoint with HMAC signing and return sanitized JSON.
+
+    The WhitebitHmacTransport injects ``request``/``nonce`` and signs the body,
+    and renames snake_case keys (e.g. order_id -> orderId) per _SNAKE_TO_CAMEL.
+    """
+    api_key, secret_key = _get_credentials()
+    if not api_key or not secret_key:
+        raise RuntimeError(
+            "❌ Credentials not configured. "
+            "HTTP transport: set X-WB-Api-Key / X-WB-Secret-Key request headers. "
+            "stdio transport: set WHITEBIT_API_KEY / WHITEBIT_SECRET_KEY env vars."
+        )
+    base_url = _get_environment().base
+    cleaned = {k: v for k, v in body.items() if v is not None}
+    _masked_key = (api_key[:4] + "…" + api_key[-4:]) if len(api_key) > 8 else "****"
+    _log.info("tool_call tool=%s key=%s params=%s", tool_name, _masked_key, _mask_log_params(cleaned))
+    try:
+        transport = WhitebitHmacTransport(api_key=api_key, secret_key=secret_key)
+        async with httpx.AsyncClient(transport=transport) as client:
+            resp = await client.post(f"{base_url}{path}", json=cleaned)
+            if resp.status_code >= 400:
+                raise RuntimeError(f"❌ WhiteBIT API error {resp.status_code}: {resp.text}")
+            result = resp.json()
+        _log.info("tool_ok tool=%s", tool_name)
+        return _sanitize(_to_serializable(result))
+    except RuntimeError:
+        _log.warning("tool_error tool=%s error=RuntimeError", tool_name)
+        raise
+    except Exception as exc:
+        _log.warning("tool_error tool=%s error=%s", tool_name, type(exc).__name__)
+        raise RuntimeError(f"❌ WhiteBIT request error: {exc}") from None
+
+
+_KLINE_INTERVALS = frozenset({
+    "1m", "3m", "5m", "15m", "30m",
+    "1h", "2h", "4h", "6h", "8h", "12h",
+    "1d", "3d", "1w", "1M",
+})
+
+
+@mcp.tool(
+    name="kline__get_kline",
+    description=(
+        "Get candlestick (OHLCV) data for a market. Public endpoint — no credentials needed. "
+        "interval is one of: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M. "
+        "limit defaults to 500, max 1000."
+    ),
+)
+async def kline__get_kline(
+    market: str,
+    interval: str,
+    limit: int | None = None,
+) -> object:
+    """Get candlestick (OHLCV) data for a market.
+
+    The Python SDK's public client has no REST kline method, so this tool calls
+    the public ``/api/v1/public/kline`` endpoint directly (mirrors the Go SDK).
+    """
+    if interval not in _KLINE_INTERVALS:
+        raise RuntimeError(
+            f"❌ Invalid interval {interval!r}. Must be one of: {', '.join(sorted(_KLINE_INTERVALS))}."
+        )
+    params: dict[str, object] = {"market": market, "interval": interval}
+    if limit is not None:
+        params["limit"] = limit
+    return await _public_get("/api/v1/public/kline", params, "kline__get_kline")
+
+
+@mcp.tool(
+    name="tickers__get_single_market_activity",
+    description=(
+        "Get ticker activity (last price, volume, high/low, etc.) for a single market. "
+        "Public endpoint — no credentials needed."
+    ),
+)
+async def tickers__get_single_market_activity(market: str) -> object:
+    """Get ticker activity for a single market.
+
+    The Python SDK only exposes the all-markets activity; this calls the public
+    ``/api/v1/public/ticker`` endpoint directly (mirrors the Go SDK).
+    """
+    return await _public_get(
+        "/api/v1/public/ticker", {"market": market},
+        "tickers__get_single_market_activity",
+    )
+
+
+@mcp.tool(
+    name="account_trade__get_order",
+    description=(
+        "Get the deal/fill records of a specific active order by its ID. "
+        "Requires API key + secret key."
+    ),
+)
+async def account_trade__get_order(
+    order_id: int,
+    limit: int | None = None,
+    offset: int | None = None,
+) -> object:
+    """Get details (deals) of a specific order by ID.
+
+    The Python SDK has no method for this; calls the private
+    ``/api/v4/trade-account/order`` endpoint directly (mirrors the Go SDK).
+    """
+    return await _signed_post(
+        "/api/v4/trade-account/order",
+        {"order_id": order_id, "limit": limit, "offset": offset},
+        "account_trade__get_order",
+    )
+
+
+@mcp.tool(
+    name="account_trade__get_oco_orders",
+    description=(
+        "Get open OCO (one-cancels-the-other) orders for a market. "
+        "Requires API key + secret key."
+    ),
+)
+async def account_trade__get_oco_orders(
+    market: str,
+    limit: int | None = None,
+    offset: int | None = None,
+) -> object:
+    """Get open OCO orders for a market.
+
+    The Python SDK has no method for this; calls the private
+    ``/api/v4/oco-orders`` endpoint directly (mirrors the Go SDK).
+    """
+    return await _signed_post(
+        "/api/v4/oco-orders",
+        {"market": market, "limit": limit, "offset": offset},
+        "account_trade__get_oco_orders",
+    )
 
 
 def main() -> None:

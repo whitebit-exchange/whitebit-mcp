@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "whitebit-mcp"
-version = "2.0.3"
+version = "2.0.4"
 description = "MCP server that exposes the WhiteBIT exchange API as AI tools"
 license = { text = "MIT" }
 requires-python = ">=3.12"
@@ -24,7 +24,10 @@ whitebit-mcp       = "server:main"
 whitebit-mcp-setup = "setup_mcp:main"
 
 [tool.hatch.build.targets.wheel]
-include = ["server.py", "setup_mcp.py"]
+include = ["server.py", "setup_mcp.py", "aliases.py", "skills_loader.py"]
+# Skills live in the whitebit-mcp-skills submodule; force-include them so the
+# wheel (and uvx/PyPI installs) ship the SKILL.md files, not just the Docker build.
+force-include = { "skills" = "skills" }
 
 [tool.ruff]
 line-length = 100
