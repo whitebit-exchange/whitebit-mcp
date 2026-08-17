@@ -23,8 +23,6 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from whitebit.core.client_wrapper import AsyncClientWrapper
 from whitebit.environment import WhitebitApiEnvironment
-from whitebit.authentication.client import AsyncAuthenticationClient
-from whitebit.account_endpoints.client import AsyncAccountEndpointsClient
 from whitebit.public_api_v4.client import AsyncPublicApiV4Client
 from whitebit.main_account.client import AsyncMainAccountClient
 from whitebit.deposit.client import AsyncDepositClient
@@ -32,16 +30,14 @@ from whitebit.jwt.client import AsyncJwtClient
 from whitebit.withdraw.client import AsyncWithdrawClient
 from whitebit.transfer.client import AsyncTransferClient
 from whitebit.codes.client import AsyncCodesClient
-from whitebit.crypto_lending_fixed.client import AsyncCryptoLendingFixedClient
-from whitebit.crypto_lending_flex.client import AsyncCryptoLendingFlexClient
 from whitebit.fees.client import AsyncFeesClient
 from whitebit.sub_account.client import AsyncSubAccountClient
 from whitebit.sub_account_api_keys.client import AsyncSubAccountApiKeysClient
-from whitebit.mining_pool.client import AsyncMiningPoolClient
 from whitebit.credit_line.client import AsyncCreditLineClient
 from whitebit.collateral_trading.client import AsyncCollateralTradingClient
 from whitebit.market_fee.client import AsyncMarketFeeClient
 from whitebit.spot_trading.client import AsyncSpotTradingClient
+from whitebit.travel_rule.client import AsyncTravelRuleClient
 from whitebit.client import AsyncWhitebitApi, OMIT
 
 from aliases import ALIASES
@@ -53,12 +49,11 @@ from skills_loader import SERVER_INSTRUCTIONS, register_skills
 #   stdio transport — env vars WHITEBIT_API_KEY / WHITEBIT_SECRET_KEY
 #
 # WHITEBIT_BASE_URL is an env-var-only setting (useful for testnet).
-# account_endpoints use OAuth2 Bearer auth; supply via X-WB-Bearer-Token header or WHITEBIT_BEARER_TOKEN env var.
+# Every private endpoint is HMAC-SHA512 signed (X-TXC-APIKEY/PAYLOAD/SIGNATURE) —
+# there is no separate OAuth2/Bearer auth scheme anymore.
 # ---------------------------------------------------------------------------
 
 SUBCLIENT_CLASSES: dict[str, type] = {
-    "authentication": AsyncAuthenticationClient,
-    "account_endpoints": AsyncAccountEndpointsClient,
     "public_api_v4": AsyncPublicApiV4Client,
     "main_account": AsyncMainAccountClient,
     "deposit": AsyncDepositClient,
@@ -66,16 +61,14 @@ SUBCLIENT_CLASSES: dict[str, type] = {
     "withdraw": AsyncWithdrawClient,
     "transfer": AsyncTransferClient,
     "codes": AsyncCodesClient,
-    "crypto_lending_fixed": AsyncCryptoLendingFixedClient,
-    "crypto_lending_flex": AsyncCryptoLendingFlexClient,
     "fees": AsyncFeesClient,
     "sub_account": AsyncSubAccountClient,
     "sub_account_api_keys": AsyncSubAccountApiKeysClient,
-    "mining_pool": AsyncMiningPoolClient,
     "credit_line": AsyncCreditLineClient,
     "collateral_trading": AsyncCollateralTradingClient,
     "market_fee": AsyncMarketFeeClient,
     "spot_trading": AsyncSpotTradingClient,
+    "travel_rule": AsyncTravelRuleClient,
 }
 
 _TOP_LEVEL_METHODS = ("convert_estimate", "convert_confirm", "convert_history")
@@ -83,7 +76,6 @@ _TOP_LEVEL_METHODS = ("convert_estimate", "convert_confirm", "convert_history")
 # Per-request credential storage (set by CredentialsMiddleware for HTTP transport).
 _api_key_var: ContextVar[str] = ContextVar("wb_api_key", default="")
 _secret_key_var: ContextVar[str] = ContextVar("wb_secret_key", default="")
-_bearer_token_var: ContextVar[str] = ContextVar("wb_bearer_token", default="")
 
 # HMAC signing fields injected by the transport — stripped from SDK method params.
 _HMAC_FIELDS = {"request", "nonce"}
@@ -109,11 +101,10 @@ _FINANCIAL_METHODS: frozenset[str] = frozenset({
     "close_position",
     # Codes
     "create_code", "apply_code",
-    # Lending
-    "create_fixed_investment", "close_fixed_investment",
-    "create_flex_investment", "close_flex_investment", "withdraw_from_flex_investment",
     # Convert
     "convert_confirm",
+    # Travel rule — submits compliance data tied to a real transaction
+    "submit_travel_rule_deposit_verification",
 })
 
 _FINANCIAL_DESCRIPTION_PREFIX = (
@@ -215,11 +206,6 @@ def _get_credentials() -> tuple[str, str]:
     return api_key, secret_key
 
 
-def _get_bearer_token() -> str:
-    """Return OAuth2 bearer token from request context or env vars."""
-    return _bearer_token_var.get() or os.environ.get("WHITEBIT_BEARER_TOKEN", "")
-
-
 _ALLOWED_BASE_URL = re.compile(
     r"^https://([a-z0-9-]+\.)?(whitebit\.(com|io)|imoney24\.technology)$"
 )
@@ -243,11 +229,16 @@ def _get_environment() -> WhitebitApiEnvironment:
 
 def _is_credentials_error(exc: Exception) -> bool:
     msg = str(exc).lower()
-    return "invalid payload" in msg or "code: 9" in msg
+    return (
+        "invalid payload" in msg
+        or "code: 9" in msg
+        or "status_code: 401" in msg
+        or "unauthorized" in msg
+    )
 
 
 class CredentialsMiddleware:
-    """ASGI middleware: extracts X-WB-Api-Key / X-WB-Secret-Key / X-WB-Bearer-Token headers into ContextVars.
+    """ASGI middleware: extracts X-WB-Api-Key / X-WB-Secret-Key headers into ContextVars.
 
     Rejects HTTP requests to /mcp with 401 when no credentials are present in
     either request headers or environment variables.  This prevents unauthenticated
@@ -266,7 +257,6 @@ class CredentialsMiddleware:
             headers: dict[bytes, bytes] = dict(scope.get("headers", []))
             api_key = headers.get(b"x-wb-api-key", b"").decode()
             secret_key = headers.get(b"x-wb-secret-key", b"").decode()
-            bearer_token = headers.get(b"x-wb-bearer-token", b"").decode()
 
             # Reject HTTP requests that carry no credentials at all.
             # Env-var credentials (stdio mode) are always accepted.
@@ -274,10 +264,8 @@ class CredentialsMiddleware:
                 scope["type"] == "http"
                 and not api_key
                 and not secret_key
-                and not bearer_token
                 and not os.environ.get("WHITEBIT_API_KEY")
                 and not os.environ.get("WHITEBIT_SECRET_KEY")
-                and not os.environ.get("WHITEBIT_BEARER_TOKEN")
                 and scope.get("path", "").startswith("/mcp")
             ):
                 _log.warning("auth_rejected path=%s peer=%s", scope.get("path"), scope.get("client"))
@@ -294,7 +282,6 @@ class CredentialsMiddleware:
 
             _api_key_var.set(api_key)
             _secret_key_var.set(secret_key)
-            _bearer_token_var.set(bearer_token)
         await self.app(scope, receive, send)
 
 
@@ -331,7 +318,8 @@ class WhitebitHmacTransport(httpx.AsyncBaseTransport):
                     body_dict[camel] = body_dict.pop(snake)
 
             body_dict["request"] = request.url.path
-            body_dict["nonce"] = time.time_ns()
+            body_dict["nonce"] = time.time_ns() // 1_000_000
+            body_dict["nonceWindow"] = True
 
             new_body = json.dumps(body_dict, separators=(',', ':')).encode()
             payload = base64.b64encode(new_body).decode()
@@ -409,19 +397,15 @@ class MCPAuthMiddleware:
         await self.app(scope, receive, send)
 
 
-class _NoAuthClientWrapper(AsyncClientWrapper):
-    """AsyncClientWrapper that omits the Authorization header (for OAuth2 exchange endpoints)."""
-
-    def get_headers(self) -> dict:
-        return {"X-Fern-Language": "Python", "X-TXC-APIKEY": self._txc_apikey}
-
-
-mcp = FastMCP("whitebit-mcp", instructions=SERVER_INSTRUCTIONS, host=os.environ.get("MCP_HOST", "127.0.0.1"), port=int(os.environ.get("MCP_PORT", "8000")))
+mcp = FastMCP(
+    "whitebit-mcp",
+    instructions=SERVER_INSTRUCTIONS,
+    host=os.environ.get("HOST", os.environ.get("MCP_HOST", "127.0.0.1")),
+    port=int(os.environ.get("PORT", os.environ.get("MCP_PORT", "8000"))),
+)
 
 
 def _make_tool(subclient_attr: str | None, method_name: str, original_sig: inspect.Signature):
-    is_account_endpoint = subclient_attr == "account_endpoints"
-    is_authentication = subclient_attr == "authentication"
     is_financial = method_name in _FINANCIAL_METHODS
 
     orig_params = [
@@ -448,20 +432,12 @@ def _make_tool(subclient_attr: str | None, method_name: str, original_sig: inspe
 
     async def tool(**kwargs):
         api_key, secret_key = _get_credentials()
-        bearer_token = _get_bearer_token()
 
-        needs_hmac = not is_authentication and not is_account_endpoint
-        if not api_key or (needs_hmac and not secret_key):
+        if not api_key or not secret_key:
             raise RuntimeError(
                 "❌ Credentials not configured. "
                 "HTTP transport: set X-WB-Api-Key / X-WB-Secret-Key request headers. "
                 "stdio transport: set WHITEBIT_API_KEY / WHITEBIT_SECRET_KEY env vars."
-            )
-        if is_account_endpoint and not bearer_token:
-            raise RuntimeError(
-                "❌ account_endpoints require a bearer_token (OAuth2 access token). "
-                "HTTP transport: set X-WB-Bearer-Token request header. "
-                "stdio transport: set WHITEBIT_BEARER_TOKEN env var."
             )
 
         if is_financial:
@@ -486,40 +462,21 @@ def _make_tool(subclient_attr: str | None, method_name: str, original_sig: inspe
         _log.info("tool_call tool=%s key=%s params=%s", method_name, _masked_key, _mask_log_params(cleaned))
 
         try:
-            if subclient_attr is None:
-                transport = WhitebitHmacTransport(api_key=api_key, secret_key=secret_key)
-                async with httpx.AsyncClient(transport=transport) as hmac_client:
+            transport = WhitebitHmacTransport(api_key=api_key, secret_key=secret_key)
+            async with httpx.AsyncClient(transport=transport) as hmac_client:
+                if subclient_attr is None:
                     obj = AsyncWhitebitApi(
-                        txc_apikey=api_key, token="unused",
+                        txc_payload="unused", txc_signature="unused", api_key=api_key,
                         environment=_get_environment(), httpx_client=hmac_client,
                     )
-                    result = await getattr(obj, method_name)(**cleaned)
-            elif is_account_endpoint:
-                async with httpx.AsyncClient() as plain_client:
+                else:
                     wrapper = AsyncClientWrapper(
-                        txc_apikey=api_key, token=bearer_token,
-                        environment=_get_environment(), httpx_client=plain_client,
-                    )
-                    obj = AsyncAccountEndpointsClient(client_wrapper=wrapper)
-                    result = await getattr(obj, method_name)(**cleaned)
-            elif is_authentication:
-                async with httpx.AsyncClient() as plain_client:
-                    wrapper = _NoAuthClientWrapper(
-                        txc_apikey=api_key, token="unused",
-                        environment=_get_environment(), httpx_client=plain_client,
-                    )
-                    obj = AsyncAuthenticationClient(client_wrapper=wrapper)
-                    result = await getattr(obj, method_name)(**cleaned)
-            else:
-                transport = WhitebitHmacTransport(api_key=api_key, secret_key=secret_key)
-                async with httpx.AsyncClient(transport=transport) as hmac_client:
-                    wrapper = AsyncClientWrapper(
-                        txc_apikey=api_key, token="unused",
+                        txc_payload="unused", txc_signature="unused", api_key=api_key,
                         environment=_get_environment(), httpx_client=hmac_client,
                     )
                     subclient_cls = SUBCLIENT_CLASSES[subclient_attr]
                     obj = subclient_cls(client_wrapper=wrapper)
-                    result = await getattr(obj, method_name)(**cleaned)
+                result = await getattr(obj, method_name)(**cleaned)
             _log.info("tool_ok tool=%s", method_name)
             return _sanitize(_to_serializable(result))
         except RuntimeError:
@@ -556,8 +513,6 @@ def register_whitebit_tools():
             fn = _make_tool(attr_name, method_name, inspect.signature(method))
             fn.__doc__ = method.__doc__
             description = _clean_description(method.__doc__)
-            if attr_name == "account_endpoints":
-                description = "⚠️ Requires bearer token (call authentication__get_access_token first). " + description
             if method_name in _FINANCIAL_METHODS:
                 description = _FINANCIAL_DESCRIPTION_PREFIX + description
             mcp.tool(name=tool_name, description=description)(fn)
@@ -661,15 +616,14 @@ Funds do NOT move between accounts automatically — use `transfer__between_bala
 | Tool category | What's needed |
 |---------------|--------------|
 | `public_api_v4__*` | Nothing — public endpoints |
-| All private tools | API key + secret key (set at connection time, not as tool params) |
-| `account_endpoints__*` | **Bearer token** — call `authentication__get_access_token` first, then pass the token via `X-WB-Bearer-Token` header (HTTP) or `WHITEBIT_BEARER_TOKEN` env var (stdio) |
+| All private tools | API key + secret key (set at connection time, not as tool params) — every private call is HMAC-SHA512 signed automatically |
 
 ## Financial actions — confirmation required
 Tools that move money or place orders have a `confirmed` parameter.
 - `confirmed=False` (default): returns a preview — no action taken.
 - `confirmed=True`: executes. Only set this after the user has explicitly approved.
 
-Affected tools include: all order creation/cancellation, withdrawals, transfers, code operations, lending actions.
+Affected tools include: all order creation/cancellation, withdrawals, transfers, code operations, travel-rule deposit verification.
 
 Do not refuse trading requests — the user pre-authorized this integration at setup time.
 Use the preview step (confirmed=False) as the safety gate, not refusal.
@@ -852,6 +806,10 @@ if __name__ == "__main__":
     starlette_app = mcp.streamable_http_app()
     starlette_app.add_middleware(CredentialsMiddleware)
     starlette_app.add_middleware(MCPAuthMiddleware)
-    _host = os.environ.get("MCP_HOST", "127.0.0.1")
-    _port = int(os.environ.get("MCP_PORT", "8000"))
-    uvicorn.run(starlette_app, host=_host, port=_port)
+    _host = os.environ.get("HOST", os.environ.get("MCP_HOST", "127.0.0.1"))
+    _port = int(os.environ.get("PORT", os.environ.get("MCP_PORT", "8000")))
+    # ws="none": this server exposes a plain HTTP/SSE route (no WebSocket routes), and
+    # uvicorn's "auto" ws detection otherwise crashes on import — the `websockets` version
+    # pulled in transitively by whitebit-python-sdk (pinned <11.0) predates the API uvicorn's
+    # websockets protocol implementation expects (ServerProtocol, added in websockets 11+).
+    uvicorn.run(starlette_app, host=_host, port=_port, ws="none")

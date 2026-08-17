@@ -272,8 +272,7 @@ Credentials are supplied at connection time — not as tool parameters. The serv
 | Endpoint type | What is needed |
 |---------------|---------------|
 | Public (market data) | No credentials required |
-| Private (trading, account) | API key + secret key |
-| Account endpoints (OAuth2) | API key + `X-WB-Bearer-Token` header (obtain via `authentication__get_access_token`) |
+| Private (trading, account) | API key + secret key — every request is HMAC-SHA512 signed automatically |
 
 Use `get_credentials_status` to verify that credentials are configured correctly.
 
@@ -297,12 +296,10 @@ LOG_LEVEL=info
 
 ## Available Tools
 
-100+ tools auto-generated from the official WhiteBit Python SDK across 19 categories:
+100+ tools auto-generated from the official WhiteBit Python SDK across 15 categories:
 
 | Category | Tool prefix |
 |----------|-------------|
-| **Authentication** | `authentication__` |
-| **Account endpoints** | `account_endpoints__` |
 | **Public API v4** | `public_api_v4__` |
 | **Main account** | `main_account__` |
 | **Deposit** | `deposit__` |
@@ -314,11 +311,9 @@ LOG_LEVEL=info
 | **Market fee** | `market_fee__` |
 | **Fees** | `fees__` |
 | **Convert** | `convert_estimate`, `convert_confirm`, `convert_history` |
-| **Crypto lending (flex)** | `crypto_lending_flex__` |
-| **Crypto lending (fixed)** | `crypto_lending_fixed__` |
+| **Travel rule** | `travel_rule__` |
 | **Sub-account** | `sub_account__` |
 | **Sub-account API keys** | `sub_account_api_keys__` |
-| **Mining pool** | `mining_pool__` |
 | **Credit line** | `credit_line__` |
 | **Credentials** | `get_credentials_status` |
 

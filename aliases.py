@@ -52,25 +52,6 @@ ALIASES: dict[str, tuple[str, str] | None] = {
     "account_collateral__get_open_positions": ("collateral_trading", "get_open_positions"),
     "account_collateral__get_positions_history": ("collateral_trading", "get_positions_history"),
 
-    # --- Earn / flexible lending ----------------------------------------------
-    "lending__flex_invest": ("crypto_lending_flex", "create_flex_investment"),
-    "lending__flex_withdraw": ("crypto_lending_flex", "withdraw_from_flex_investment"),
-    "lending__flex_close": ("crypto_lending_flex", "close_flex_investment"),
-    "lending__flex_set_auto_invest": ("crypto_lending_flex", "update_flex_auto_reinvestment"),
-    "lending__get_flex_plans": ("crypto_lending_flex", "get_flex_plans"),
-    "lending__get_flex_investments": ("crypto_lending_flex", "get_user_flex_investments"),
-    # FLAG (minor): SDK splits history into investment vs payment history.
-    # Mapped to investment history — confirm which the skill expects.
-    "lending__get_flex_history": ("crypto_lending_flex", "get_flex_investment_history"),
-
-    # --- Earn / fixed lending -------------------------------------------------
-    "lending__create_fixed_investment": ("crypto_lending_fixed", "create_fixed_investment"),
-    "lending__close_fixed_investment": ("crypto_lending_fixed", "close_fixed_investment"),
-    "lending__get_fixed_plans": ("crypto_lending_fixed", "get_fixed_plans"),
-    "lending__get_fixed_interest_history": ("crypto_lending_fixed", "get_interest_payment_history"),
-    # FLAG (minor): SDK exposes only get_fixed_investments_history (no plain list).
-    "lending__get_fixed_investments": ("crypto_lending_fixed", "get_fixed_investments_history"),
-
     # --- Main account ---------------------------------------------------------
     "main_account__get_balance": ("main_account", "get_main_balance"),
 

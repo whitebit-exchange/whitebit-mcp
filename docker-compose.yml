@@ -7,5 +7,5 @@ services:
     env_file:
       - .env
     environment:
-      - MCP_HOST=0.0.0.0
+      - HOST=0.0.0.0
     restart: unless-stopped
